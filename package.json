@@ -1,0 +1,28 @@
+{
+    "name": "insighrag-server",
+    "version": "1.0.0",
+    "description": "Agentic RAG Document Chatbot — Backend API",
+    "main": "src/index.js",
+    "type": "module",
+    "scripts": {
+        "dev": "node --watch src/index.js",
+        "start": "node src/index.js"
+    },
+    "dependencies": {
+        "@langchain/community": "^0.3.0",
+        "@langchain/core": "^0.3.0",
+        "@langchain/openai": "^0.3.0",
+        "bcryptjs": "^2.4.3",
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.5",
+        "express": "^4.21.0",
+        "jsonwebtoken": "^9.0.2",
+        "mammoth": "^1.8.0",
+        "marked": "^14.0.0",
+        "mongodb": "^6.9.0",
+        "mongoose": "^8.7.0",
+        "multer": "^1.4.5-lts.1",
+        "pdf-parse": "^1.1.1",
+        "uuid": "^10.0.0"
+    }
+}
