@@ -1,4 +1,4 @@
-import { ChatOpenAI } from '@langchain/openai';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { vectorSearch, fallbackVectorSearch } from './vectorSearchService.js';
 import Document from '../models/Document.js';
 
@@ -6,9 +6,9 @@ let llm = null;
 
 function getLLM() {
     if (!llm) {
-        llm = new ChatOpenAI({
-            openAIApiKey: process.env.OPENAI_API_KEY,
-            modelName: process.env.LLM_MODEL || 'gpt-4o-mini',
+        llm = new ChatGoogleGenerativeAI({
+            apiKey: process.env.GOOGLE_GENAI_API_KEY,
+            model: process.env.LLM_MODEL || 'gemini-2.0-flash',
             temperature: 0.3,
             streaming: true,
         });
@@ -92,12 +92,15 @@ export async function runRAG(query, userId, { stream = false } = {}) {
     const docs = await Document.find({ _id: { $in: docIds } }).lean();
     const docMap = Object.fromEntries(docs.map((d) => [d._id.toString(), d.originalName]));
 
-    const sources = chunks.map((c) => ({
-        documentId: c.documentId,
-        filename: docMap[c.documentId?.toString()] || 'Unknown',
-        chunkText: c.text.substring(0, 200),
-        score: c.score,
-    }));
+    const sources = chunks.map((c) => {
+        const score = typeof c.score === 'number' && Number.isFinite(c.score) ? c.score : 0;
+        return {
+            documentId: c.documentId,
+            filename: docMap[c.documentId?.toString()] || 'Unknown',
+            chunkText: (c.text || '').substring(0, 200),
+            score,
+        };
+    });
 
     if (stream) {
         // Return a LangChain stream — caller handles SSE

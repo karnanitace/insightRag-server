@@ -59,7 +59,7 @@ export async function fallbackVectorSearch(query, userId, { topK = 5 } = {}) {
         const dot = chunk.embedding.reduce((sum, val, i) => sum + val * queryEmbedding[i], 0);
         const normA = Math.sqrt(chunk.embedding.reduce((sum, val) => sum + val * val, 0));
         const normB = Math.sqrt(queryEmbedding.reduce((sum, val) => sum + val * val, 0));
-        const score = dot / (normA * normB);
+        const score = (normA === 0 || normB === 0) ? 0 : dot / (normA * normB);
         return { ...chunk, score };
     });
 

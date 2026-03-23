@@ -14,13 +14,13 @@ const chunkSchema = new mongoose.Schema(
 /**
  * MongoDB Atlas Vector Search index must be created on the `embedding` field.
  * Index name: "vector_index"
- * Dimensions: 1536 (text-embedding-3-small)
+ * Dimensions: 768 (gemini text-embedding-004)
  * Similarity: cosine
  *
  * Atlas JSON definition:
  * {
  *   "fields": [
- *     { "type": "vector", "path": "embedding", "numDimensions": 1536, "similarity": "cosine" },
+ *     { "type": "vector", "path": "embedding", "numDimensions": 768, "similarity": "cosine" },
  *     { "type": "filter",  "path": "userId" }
  *   ]
  * }

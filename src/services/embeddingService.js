@@ -1,4 +1,4 @@
-import { OpenAIEmbeddings } from '@langchain/openai';
+import { GoogleGenerativeAIEmbeddings } from '@langchain/google-genai';
 
 let embeddingsClient = null;
 
@@ -8,9 +8,9 @@ let embeddingsClient = null;
  */
 function getClient() {
     if (!embeddingsClient) {
-        embeddingsClient = new OpenAIEmbeddings({
-            openAIApiKey: process.env.OPENAI_API_KEY,
-            modelName: process.env.EMBEDDING_MODEL || 'text-embedding-3-small',
+        embeddingsClient = new GoogleGenerativeAIEmbeddings({
+            apiKey: process.env.GOOGLE_GENAI_API_KEY,
+            model: process.env.EMBEDDING_MODEL || 'gemini-embedding-001',
         });
     }
     return embeddingsClient;
