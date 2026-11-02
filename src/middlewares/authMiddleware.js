@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
+import { isDemoUser } from '../config/demo.js';
 
 /**
  * JWT authentication middleware.
@@ -26,4 +27,18 @@ export const protect = async (req, res, next) => {
     } catch (error) {
         return res.status(401).json({ success: false, message: 'Not authorized — invalid token' });
     }
+};
+
+/**
+ * Keeps the shared demo account intact for the next visitor: blocks destructive actions.
+ * Use after `protect`.
+ */
+export const blockDemo = (req, res, next) => {
+    if (isDemoUser(req.user)) {
+        return res.status(403).json({
+            success: false,
+            message: 'The demo account is shared, so deleting is turned off. Create a free account to manage your own library.',
+        });
+    }
+    next();
 };

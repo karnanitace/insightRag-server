@@ -8,7 +8,7 @@ import {
     getMessages,
     sendMessage,
 } from '../controllers/chatController.js';
-import { protect } from '../middlewares/authMiddleware.js';
+import { protect, blockDemo } from '../middlewares/authMiddleware.js';
 
 const router = Router();
 
@@ -18,7 +18,7 @@ router.get('/', listChats);
 router.post('/', createChat);
 router.get('/:id', getChat);
 router.patch('/:id', updateChat);
-router.delete('/:id', deleteChat);
+router.delete('/:id', blockDemo, deleteChat);
 router.get('/:id/messages', getMessages);
 router.post('/:id/messages', sendMessage);
 

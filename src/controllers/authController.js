@@ -3,12 +3,15 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import { sendEmail } from '../services/emailService.js';
 import { passwordResetEmail } from '../services/emailTemplates.js';
+import { demoEnabled, demoEmail, demoName, isDemoUser } from '../config/demo.js';
 
 /**
  * Generate a signed JWT for the given user ID.
  */
 const signToken = (id) =>
     jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+const publicUser = (user) => ({ id: user._id, name: user.name, email: user.email, isDemo: isDemoUser(user) });
 
 /**
  * POST /api/auth/register
@@ -29,7 +32,7 @@ export const register = async (req, res, next) => {
         res.status(201).json({
             success: true,
             token,
-            user: { id: user._id, name: user.name, email: user.email },
+            user: publicUser(user),
         });
     } catch (error) {
         next(error);
@@ -58,8 +61,34 @@ export const login = async (req, res, next) => {
         res.json({
             success: true,
             token,
-            user: { id: user._id, name: user.name, email: user.email },
+            user: publicUser(user),
         });
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * POST /api/auth/demo
+ * Signs in to the shared demo account, creating it on first use with a random password
+ * (it is only ever entered through this endpoint).
+ */
+export const demoLogin = async (req, res, next) => {
+    try {
+        if (!demoEnabled()) {
+            return res.status(404).json({ success: false, message: 'The demo account is not available' });
+        }
+
+        let user = await User.findOne({ email: demoEmail() });
+        if (!user) {
+            user = await User.create({
+                name: demoName(),
+                email: demoEmail(),
+                password: crypto.randomBytes(24).toString('hex'),
+            });
+        }
+
+        res.json({ success: true, token: signToken(user._id), user: publicUser(user) });
     } catch (error) {
         next(error);
     }
@@ -83,7 +112,8 @@ export const forgotPassword = async (req, res, next) => {
 
         // Respond identically whether or not the user exists, to avoid email enumeration
         const user = await User.findOne({ email: email.toLowerCase().trim() });
-        if (!user) return res.json(genericResponse);
+        // The demo account's password is never reset: nobody owns its inbox
+        if (!user || isDemoUser(user)) return res.json(genericResponse);
 
         const resetToken = user.createPasswordResetToken();
         await user.save({ validateBeforeSave: false });
@@ -138,7 +168,7 @@ export const resetPassword = async (req, res, next) => {
         res.json({
             success: true,
             token,
-            user: { id: user._id, name: user.name, email: user.email },
+            user: publicUser(user),
         });
     } catch (error) {
         next(error);
@@ -151,6 +181,6 @@ export const resetPassword = async (req, res, next) => {
 export const getMe = async (req, res) => {
     res.json({
         success: true,
-        user: { id: req.user._id, name: req.user.name, email: req.user.email },
+        user: publicUser(req.user),
     });
 };
