@@ -1,6 +1,13 @@
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
-import { vectorSearch, fallbackVectorSearch } from './vectorSearchService.js';
+import { searchChunks } from './vectorSearchService.js';
 import Document from '../models/Document.js';
+import Chunk from '../models/Chunk.js';
+
+// Single-document chats include the whole document when it's at most this many chunks
+const FULL_DOCUMENT_MAX_CHUNKS = 15;
+// Prior Q/A turns included as conversation memory
+const HISTORY_TURNS = 4;
+const HISTORY_ANSWER_MAX_CHARS = 1500;
 
 let llm = null;
 
@@ -17,21 +24,42 @@ function getLLM() {
 }
 
 /**
- * Build a grounded system prompt that includes the retrieved context chunks.
+ * Describe what the chat is scoped to, for the system prompt.
  */
-function buildPrompt(chunks, userQuery) {
+function describeScope(documents) {
+    if (!documents) return "You have access to all of the user's uploaded documents.";
+    if (documents.length === 1) return `You are dedicated to a single document: "${documents[0].originalName}".`;
+    return `You are dedicated to this group of documents:\n${documents.map((d) => `- ${d.originalName}`).join('\n')}`;
+}
+
+/**
+ * Build a grounded prompt: system context, recent conversation turns, then the question.
+ */
+function buildPrompt({ chunks, docMap, documents, fullDocumentText, history, userQuery }) {
     const contextBlock = chunks
-        .map((c, i) => `[Source ${i + 1}] (score: ${c.score?.toFixed(3) ?? 'N/A'})\n${c.text}`)
+        .map((c, i) => `[Source ${i + 1}] (from: ${docMap[c.documentId?.toString()] || 'Unknown'}, score: ${c.score?.toFixed(3) ?? 'N/A'})\n${c.text}`)
         .join('\n\n---\n\n');
+
+    const fullDocumentBlock = fullDocumentText
+        ? `\n\n## Full Document Text\nThe complete document is included below for document-wide questions (e.g. summaries). Prefer citing the numbered sources when they contain the answer.\n\n${fullDocumentText}`
+        : '';
+
+    const historyMessages = history.flatMap((turn) => [
+        { role: 'user', content: turn.userQuery },
+        { role: 'assistant', content: turn.response.substring(0, HISTORY_ANSWER_MAX_CHARS) },
+    ]);
 
     return [
         {
             role: 'system',
-            content: `You are InsightRAG — an expert AI research assistant. Answer the user's question based ONLY on the provided context. If the context does not contain enough information, say so clearly. Always cite which source(s) you used (e.g. [Source 1]).
+            content: `You are InsightRAG — an expert AI research assistant. ${describeScope(documents)}
+
+Answer the user's question based ONLY on the provided context. If the context does not contain enough information, say so clearly. Always cite which source(s) you used (e.g. [Source 1]). Use the conversation so far to understand follow-up questions.
 
 ## Retrieved Context
-${contextBlock}`,
+${contextBlock}${fullDocumentBlock}`,
         },
+        ...historyMessages,
         { role: 'user', content: userQuery },
     ];
 }
@@ -39,58 +67,66 @@ ${contextBlock}`,
 /**
  * Agentic RAG pipeline.
  *
- * 1. Retrieve relevant chunks via vector search.
- * 2. Evaluate whether the retrieved context is sufficient.
- * 3. If insufficient, refine the query and re-retrieve (one retry).
+ * 1. Rewrite follow-up questions into standalone search queries using chat history.
+ * 2. Retrieve relevant chunks via vector search, scoped to the chat's documents.
+ * 3. If the retrieved context looks weak, refine the query and re-retrieve (one retry).
  * 4. Generate a grounded answer with source citations.
  *
  * @param {string} query – user question
- * @param {string} userId – restrict retrieval to this user's documents
  * @param {object} options
+ * @param {string} options.userId – owner of the documents
+ * @param {Array|null} options.documents – the chat's documents (null = all of the user's documents)
+ * @param {Array} options.history – previous ChatHistory entries, oldest first
  * @param {boolean} options.stream – whether to return a readable stream (default false)
- * @returns {Promise<{answer: string, sources: Array}>}
+ * @param {AbortSignal} options.signal – aborts LLM generation
+ * @returns {Promise<{answer?: string, stream?: AsyncIterable, sources: Array}>}
  */
-export async function runRAG(query, userId, { stream = false } = {}) {
+export async function runRAG(query, { userId, documents = null, history = [], stream = false, signal } = {}) {
     const model = getLLM();
+    const recentHistory = history.slice(-HISTORY_TURNS);
+    const documentIds = documents ? documents.map((d) => d._id) : null;
+    const search = (q) => searchChunks(q, userId, { documentIds, topK: 5 });
 
-    // ── Step 1: Retrieve ──────────────────────────────────────
-    let chunks;
-    try {
-        chunks = await vectorSearch(query, userId, { topK: 5 });
-    } catch {
-        // Atlas Vector Search may not be configured — fall back
-        chunks = await fallbackVectorSearch(query, userId, { topK: 5 });
-    }
+    // ── Step 1: Make follow-ups searchable ────────────────────
+    const searchQuery = recentHistory.length > 0 ? await condenseQuestion(model, query, recentHistory) : query;
 
-    // ── Step 2: Evaluate sufficiency ──────────────────────────
+    // ── Step 2: Retrieve ──────────────────────────────────────
+    let chunks = await search(searchQuery);
+
     if (chunks.length === 0) {
         return {
-            answer:
-                "I couldn't find any relevant information in your documents. Please make sure you've uploaded documents related to your question.",
+            answer: documents
+                ? "I couldn't find any relevant information in this chat's documents."
+                : "I couldn't find any relevant information in your documents. Please make sure you've uploaded documents related to your question.",
             sources: [],
         };
     }
 
-    // If top score is very low, try refining the query (agentic behaviour)
+    // ── Step 3: Evaluate sufficiency — refine if weak (agentic behaviour) ──
     const topScore = chunks[0]?.score ?? 0;
-    if (topScore < 0.5 && chunks.length > 0) {
-        const refinedQuery = await refineQuery(model, query, chunks);
-        if (refinedQuery && refinedQuery !== query) {
-            try {
-                chunks = await vectorSearch(refinedQuery, userId, { topK: 5 });
-            } catch {
-                chunks = await fallbackVectorSearch(refinedQuery, userId, { topK: 5 });
-            }
+    if (topScore < 0.5) {
+        const refinedQuery = await refineQuery(model, searchQuery, chunks);
+        if (refinedQuery && refinedQuery !== searchQuery) {
+            const refinedChunks = await search(refinedQuery);
+            if (refinedChunks.length > 0) chunks = refinedChunks;
         }
     }
 
-    // ── Step 3: Generate answer ───────────────────────────────
-    const messages = buildPrompt(chunks, query);
-
-    // Resolve document filenames for the sources
+    // ── Step 4: Generate answer ───────────────────────────────
     const docIds = [...new Set(chunks.map((c) => c.documentId?.toString()))];
-    const docs = await Document.find({ _id: { $in: docIds } }).lean();
+    const docs = documents ?? await Document.find({ _id: { $in: docIds } }).lean();
     const docMap = Object.fromEntries(docs.map((d) => [d._id.toString(), d.originalName]));
+
+    let fullDocumentText = null;
+    if (documents?.length === 1 && documents[0].chunkCount <= FULL_DOCUMENT_MAX_CHUNKS) {
+        const allChunks = await Chunk.find({ documentId: documents[0]._id, userId })
+            .sort({ chunkIndex: 1 })
+            .select('text')
+            .lean();
+        fullDocumentText = allChunks.map((c) => c.text).join('\n\n');
+    }
+
+    const messages = buildPrompt({ chunks, docMap, documents, fullDocumentText, history: recentHistory, userQuery: query });
 
     const sources = chunks.map((c) => {
         const score = typeof c.score === 'number' && Number.isFinite(c.score) ? c.score : 0;
@@ -104,12 +140,34 @@ export async function runRAG(query, userId, { stream = false } = {}) {
 
     if (stream) {
         // Return a LangChain stream — caller handles SSE
-        const responseStream = await model.stream(messages);
+        const responseStream = await model.stream(messages, { signal });
         return { stream: responseStream, sources };
     }
 
-    const response = await model.invoke(messages);
+    const response = await model.invoke(messages, { signal });
     return { answer: response.content, sources };
+}
+
+/**
+ * Rewrite a follow-up question (e.g. "what about the second one?") into a standalone
+ * search query using recent conversation turns.
+ */
+async function condenseQuestion(model, query, history) {
+    try {
+        const transcript = history
+            .map((t) => `User: ${t.userQuery}\nAssistant: ${t.response.substring(0, 500)}`)
+            .join('\n\n');
+        const response = await model.invoke([
+            {
+                role: 'system',
+                content: `Given the conversation below and a follow-up question, rewrite the follow-up as a standalone search query that includes any context it refers to. If it is already standalone, return it unchanged. Return ONLY the query, nothing else.\n\nConversation:\n${transcript}`,
+            },
+            { role: 'user', content: query },
+        ]);
+        return response.content.trim() || query;
+    } catch {
+        return query;
+    }
 }
 
 /**

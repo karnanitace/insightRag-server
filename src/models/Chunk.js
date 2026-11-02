@@ -21,7 +21,8 @@ const chunkSchema = new mongoose.Schema(
  * {
  *   "fields": [
  *     { "type": "vector", "path": "embedding", "numDimensions": 768, "similarity": "cosine" },
- *     { "type": "filter",  "path": "userId" }
+ *     { "type": "filter",  "path": "userId" },
+ *     { "type": "filter",  "path": "documentId" }
  *   ]
  * }
  */

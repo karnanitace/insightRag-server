@@ -3,6 +3,7 @@ import Chunk from '../models/Chunk.js';
 import { parseDocument } from '../services/documentParser.js';
 import { chunkText } from '../services/chunkService.js';
 import { embedTexts } from '../services/embeddingService.js';
+import { detachDocumentFromChats } from '../services/chatService.js';
 import fs from 'fs/promises';
 
 /**
@@ -114,6 +115,9 @@ export const deleteDocument = async (req, res, next) => {
 
         // Delete document record
         await Document.deleteOne({ _id: doc._id });
+
+        // Remove it from any chats (archiving chats left empty or duplicated)
+        await detachDocumentFromChats(req.user._id, doc._id);
 
         res.json({ success: true, message: 'Document deleted' });
     } catch (error) {
